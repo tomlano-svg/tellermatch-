@@ -194,6 +194,10 @@
   .shop-cat{ font-size:12.5px; font-weight:700; color:var(--tomato-dark); margin:14px 0 6px; text-transform:uppercase; letter-spacing:0.04em; }
   .shop-cat:first-child{ margin-top:0; }
   .week-sum{ font-size:13px; color:var(--ink-soft); margin-top:-8px; margin-bottom:14px; }
+  .pair-code-display{
+    font-family:'Fraunces', serif; font-weight:700; font-size:32px; text-align:center;
+    background:var(--card-bg); border:1.5px dashed var(--tomato); border-radius:16px; padding:22px 10px; color:var(--tomato-dark);
+  }
 
   .progress-row{ display:flex; align-items:center; gap:10px; margin-bottom:18px; font-size:13px; color:var(--ink-soft); }
   .progress-track{ flex:1; height:4px; border-radius:4px; background:var(--line); overflow:hidden; }
@@ -417,6 +421,32 @@
     <button class="btn primary" id="nutritionNextBtn" onclick="confirmNutrition()">Weiter</button>
   </section>
 
+  <!-- PAAR VERBINDEN (einmalig, statt Code bei jeder Runde) -->
+  <section class="screen" id="screen-pair">
+    <h1 class="hero" style="font-size:28px;">Verbindet euch <span class="accent">einmalig</span></h1>
+    <p class="sub">Einer von euch erstellt ein neues Paar, der/die andere tritt mit dem Code bei. Das reicht dauerhaft — kein Code mehr bei jeder Runde.</p>
+    <button class="btn primary" onclick="createPairFlow()">Neues Paar erstellen</button>
+    <div class="text-row" style="margin-top:18px;">
+      <input id="pairCodeInput" placeholder="Code eingeben, z. B. sonne-7123">
+      <button onclick="joinPairFlow()">Beitreten</button>
+    </div>
+    <div id="pairStatus" style="margin-top:16px; font-size:13.5px; color:var(--ink-soft); text-align:center;"></div>
+  </section>
+
+  <section class="screen" id="screen-pair-created">
+    <h1 class="hero" style="font-size:28px;">Fertig <span class="accent">verbunden!</span></h1>
+    <p class="sub">Teile diesen Code einmalig mit deinem Partner oder deiner Partnerin (z. B. per WhatsApp) — er/sie gibt ihn beim Öffnen der App unter "Beitreten" ein.</p>
+    <div class="pair-code-display" id="pairCodeDisplay"></div>
+    <button class="btn primary" style="margin-top:18px;" onclick="finishPairSetup()">Weiter zum Swipen</button>
+  </section>
+
+  <!-- WARTEN AUF PARTNER:IN -->
+  <section class="screen" id="screen-waiting">
+    <h1 class="hero" style="font-size:26px;">Fast geschafft<span class="accent">…</span></h1>
+    <p class="sub" id="waitingStatus">Warte auf deine:n Partner:in…</p>
+    <div class="empty-state"><div class="e">⏳</div><div>Sobald er/sie ebenfalls fertig geswiped hat, geht's hier automatisch weiter.</div></div>
+  </section>
+
   <!-- VORRATS-CHECK (vor jeder Swipe-Runde, optional) -->
   <section class="screen" id="screen-pantry">
     <h1 class="hero" style="font-size:28px;">Was habt ihr <span class="accent">zu Hause?</span></h1>
@@ -547,6 +577,91 @@
   </div>
 </div>
 
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+  import {
+    getFirestore, doc, setDoc, getDoc, onSnapshot,
+    collection, query, orderBy, limit, getDocs, serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCEJhRPLJZV-ryQWKLxaTsEilnFfxhkdvg",
+    authDomain: "tellermatch.firebaseapp.com",
+    projectId: "tellermatch",
+    storageBucket: "tellermatch.firebasestorage.app",
+    messagingSenderId: "578438579115",
+    appId: "1:578438579115:web:c3fe1c9898a91dcaa308ee"
+  };
+
+  const fbApp = initializeApp(firebaseConfig);
+  const db = getFirestore(fbApp);
+
+  function randomPairId(){
+    const words = ['sonne','mond','stern','fluss','berg','wald','feld','meer','wolke','wind','apfel','zimt'];
+    const w = words[Math.floor(Math.random() * words.length)];
+    const n = Math.floor(1000 + Math.random() * 9000);
+    return `${w}-${n}`;
+  }
+  window.fbRandomPairId = randomPairId;
+
+  window.fbCreatePair = async function(profile, allergies, nutrition){
+    let pairId = randomPairId();
+    // sehr unwahrscheinliche Kollision abfangen
+    for(let i=0; i<5; i++){
+      const existing = await getDoc(doc(db, 'pairs', pairId));
+      if(!existing.exists()) break;
+      pairId = randomPairId();
+    }
+    await setDoc(doc(db, 'pairs', pairId), { createdAt: serverTimestamp() });
+    await setDoc(doc(db, 'pairs', pairId, 'members', 'a'), { profile, allergies, nutrition, joinedAt: serverTimestamp() });
+    return pairId;
+  };
+
+  window.fbJoinPair = async function(pairId, profile, allergies, nutrition){
+    const pairSnap = await getDoc(doc(db, 'pairs', pairId));
+    if(!pairSnap.exists()) return { ok:false, error:'not-found' };
+    await setDoc(doc(db, 'pairs', pairId, 'members', 'b'), { profile, allergies, nutrition, joinedAt: serverTimestamp() });
+    return { ok:true };
+  };
+
+  window.fbGetPartnerData = async function(pairId, myMemberId){
+    const partnerId = myMemberId === 'a' ? 'b' : 'a';
+    const snap = await getDoc(doc(db, 'pairs', pairId, 'members', partnerId));
+    return snap.exists() ? snap.data() : null;
+  };
+
+  window.fbGetActiveRound = async function(pairId){
+    const roundsRef = collection(db, 'pairs', pairId, 'rounds');
+    const q = query(roundsRef, orderBy('createdAt', 'desc'), limit(1));
+    const snaps = await getDocs(q);
+    if(snaps.empty) return null;
+    const d = snaps.docs[0];
+    return { id: d.id, ...d.data() };
+  };
+
+  window.fbCreateRound = async function(pairId, dishIds, createdBy){
+    const roundId = 'r' + Date.now();
+    await setDoc(doc(db, 'pairs', pairId, 'rounds', roundId), { dishIds, createdAt: serverTimestamp(), createdBy });
+    return roundId;
+  };
+
+  window.fbSubmitSwipes = async function(pairId, roundId, memberId, likedIds){
+    await setDoc(doc(db, 'pairs', pairId, 'rounds', roundId, 'swipes', memberId), { likedIds, swipedAt: serverTimestamp() });
+  };
+
+  window.fbGetSwipes = async function(pairId, roundId, memberId){
+    const snap = await getDoc(doc(db, 'pairs', pairId, 'rounds', roundId, 'swipes', memberId));
+    return snap.exists() ? snap.data() : null;
+  };
+
+  window.fbListenForPartnerSwipes = function(pairId, roundId, partnerMemberId, callback){
+    return onSnapshot(doc(db, 'pairs', pairId, 'rounds', roundId, 'swipes', partnerMemberId), (snap)=>{
+      if(snap.exists()) callback(snap.data());
+    });
+  };
+
+  window.fbReady = true;
+</script>
 <script>
 /* ---------------- Darstellung: hell/dunkel/automatisch ---------------- */
 function applyTheme(){
@@ -4181,19 +4296,105 @@ function confirmNutrition(){
   const proteinMin = parseInt(document.getElementById('proteinSlider').value, 10);
   localStorage.setItem('tm_nutrition', JSON.stringify({ kcalMax, proteinMin }));
 
+  const likedPrefs = PREFS.filter((p,i)=> bit(prefMask,i)).map(p=>p.id);
+  localStorage.setItem('tm_profile', JSON.stringify(likedPrefs));
+  localStorage.setItem('tm_allergies', JSON.stringify(myAllergyIds));
+
   if(getMode() === 'solo'){
-    const likedPrefs = PREFS.filter((p,i)=> bit(prefMask,i)).map(p=>p.id);
-    localStorage.setItem('tm_profile', JSON.stringify(likedPrefs));
-    localStorage.setItem('tm_allergies', JSON.stringify(myAllergyIds));
     localStorage.setItem('tm_setup_done', '1');
     startDishSwipe(null);
     return;
   }
 
-  const allergyMask = allergyMaskFromIds(myAllergyIds);
-  const combined = prefMask | (allergyMask << PREFS.length);
-  const totalLen = PREFS.length + ALLERGENS.length;
-  showCodeScreen('setup', combined, totalLen);
+  document.getElementById('pairCodeInput').value = '';
+  document.getElementById('pairStatus').textContent = '';
+  showScreen('screen-pair');
+}
+
+/* ---------------- Paar verbinden (einmalig, Cloud-Sync statt Code pro Runde) ---------------- */
+let currentRoundId = null;
+let partnerListenerUnsub = null;
+
+async function createPairFlow(){
+  const status = document.getElementById('pairStatus');
+  if(!window.fbCreatePair){ status.textContent = 'Verbindung wird noch geladen – bitte kurz warten und nochmal tippen.'; return; }
+  status.textContent = 'Erstelle euer Paar…';
+  try{
+    const pairId = await window.fbCreatePair(getProfile(), getAllergies(), getNutrition());
+    localStorage.setItem('tm_pair_id', pairId);
+    localStorage.setItem('tm_member_id', 'a');
+    document.getElementById('pairCodeDisplay').textContent = pairId;
+    showScreen('screen-pair-created');
+  }catch(e){
+    status.textContent = 'Fehler – bitte Internetverbindung prüfen und nochmal versuchen.';
+  }
+}
+
+async function joinPairFlow(){
+  const code = (document.getElementById('pairCodeInput').value || '').trim().toLowerCase();
+  const status = document.getElementById('pairStatus');
+  if(!code){ status.textContent = 'Bitte zuerst einen Code eingeben.'; return; }
+  if(!window.fbJoinPair){ status.textContent = 'Verbindung wird noch geladen – bitte kurz warten und nochmal tippen.'; return; }
+  status.textContent = 'Verbinde…';
+  try{
+    const res = await window.fbJoinPair(code, getProfile(), getAllergies(), getNutrition());
+    if(!res.ok){ status.textContent = 'Diesen Code gibt es nicht – bitte prüfen.'; return; }
+    localStorage.setItem('tm_pair_id', code);
+    localStorage.setItem('tm_member_id', 'b');
+    finishPairSetup();
+  }catch(e){
+    status.textContent = 'Fehler – bitte Internetverbindung prüfen und nochmal versuchen.';
+  }
+}
+
+function finishPairSetup(){
+  localStorage.setItem('tm_setup_done', '1');
+  startDishSwipe(null);
+}
+
+function pickDishIdsForRound(allergies, profileTags){
+  const recent = getRecent();
+  const nutrition = getNutrition();
+  let base = DISHES.filter(d => !d.allergens.some(a => allergies.includes(a)));
+  if(base.length === 0) base = DISHES;
+  let pool = base.filter(d => d.kcal <= nutrition.kcalMax && d.protein >= nutrition.proteinMin);
+  if(pool.length < 8) pool = base;
+
+  const scored = pool.map(d=>{
+    let score = d.tags.filter(t => profileTags.includes(t)).length * 10;
+    if(recent.includes(d.id)) score -= 9;
+    return { d, score: score + Math.random() };
+  });
+  scored.sort((a,b)=> b.score - a.score);
+
+  const seen = new Set(); const deduped = [];
+  scored.forEach(x=>{ const bid = baseDishId(x.d.id); if(!seen.has(bid)){ seen.add(bid); deduped.push(x); } });
+  return deduped.slice(0, 10).map(x=>x.d.id);
+}
+
+async function loadOrCreateDuoRound(){
+  const pairId = localStorage.getItem('tm_pair_id');
+  const memberId = localStorage.getItem('tm_member_id');
+  let round = await window.fbGetActiveRound(pairId);
+
+  if(round){
+    const mySwipes = await window.fbGetSwipes(pairId, round.id, memberId);
+    if(mySwipes){ round = null; } // diese Runde habe ich schon geswiped -> neue Runde
+  }
+
+  if(!round){
+    const partner = await window.fbGetPartnerData(pairId, memberId);
+    const combinedAllergies = Array.from(new Set([...getAllergies(), ...((partner && partner.allergies) || [])]));
+    const myProfile = getProfile();
+    const partnerProfile = (partner && partner.profile) || myProfile;
+    const combinedProfile = myProfile.filter(t => partnerProfile.includes(t));
+    const dishIds = pickDishIdsForRound(combinedAllergies, combinedProfile.length ? combinedProfile : myProfile);
+    const roundId = await window.fbCreateRound(pairId, dishIds, memberId);
+    round = { id: roundId, dishIds };
+  }
+
+  currentRoundId = round.id;
+  return round.dishIds.map(id => DISHES.find(d=>d.id===id)).filter(Boolean);
 }
 
 function allergyMaskFromIds(ids){
@@ -4230,12 +4431,27 @@ function renderPantryChips(filterText){
   });
 }
 
-function confirmPantry(skip){
+async function confirmPantry(skip){
   if(skip){ pantrySelection = []; }
   localStorage.setItem('tm_pantry', JSON.stringify(pantrySelection));
   deckMode = 'dishes';
-  deckItems = filterDishes();
   deckIndex = 0; deckSwipes = {};
+
+  const isDuoCloud = (getMode() === 'duo' && localStorage.getItem('tm_pair_id'));
+
+  if(isDuoCloud){
+    showScreen('screen-swipe');
+    document.getElementById('deck').innerHTML = '<div class="empty-state"><div class="e">⏳</div><div>Verbinde mit eurer gemeinsamen Runde…</div></div>';
+    try{
+      deckItems = await loadOrCreateDuoRound();
+    }catch(e){
+      document.getElementById('deck').innerHTML = '<div class="empty-state"><div class="e">⚠️</div><div>Keine Verbindung – bitte Internet prüfen und nochmal versuchen.</div></div>';
+      return;
+    }
+  } else {
+    deckItems = filterDishes();
+  }
+
   showScreen('screen-swipe');
   renderDeck();
 }
@@ -4369,20 +4585,54 @@ function commitSwipe(liked){
   setTimeout(renderDeck, 220);
 }
 
-function finishDeck(){
+async function finishDeck(){
   const mask = computeMask(deckItems, deckSwipes);
   if(deckMode === 'prefs'){
     prefMask = mask;
     showAllergyScreen();
-  } else {
-    deckMask = mask;
-    if(getMode() === 'solo'){
-      const matches = deckItems.filter((d,i)=> bit(mask,i));
-      handleDishMatches(matches);
-    } else {
-      showCodeScreen('dishes', mask, deckItems.length);
-    }
+    return;
   }
+
+  deckMask = mask;
+  const likedItems = deckItems.filter((d,i)=> bit(mask,i));
+
+  if(getMode() === 'solo' || !localStorage.getItem('tm_pair_id')){
+    handleDishMatches(likedItems);
+    return;
+  }
+
+  // Duo mit Cloud-Sync: eigene Likes hochladen, auf Partner:in warten
+  const pairId = localStorage.getItem('tm_pair_id');
+  const memberId = localStorage.getItem('tm_member_id');
+  const likedIds = likedItems.map(d=>d.id);
+
+  if(!currentRoundId){ handleDishMatches(likedItems); return; }
+
+  showScreen('screen-waiting');
+  document.getElementById('waitingStatus').textContent = 'Warte auf deine:n Partner:in…';
+
+  try{
+    await window.fbSubmitSwipes(pairId, currentRoundId, memberId, likedIds);
+    const partnerId = memberId === 'a' ? 'b' : 'a';
+    const existing = await window.fbGetSwipes(pairId, currentRoundId, partnerId);
+    if(existing){
+      finalizeDuoMatch(likedIds, existing.likedIds);
+    } else {
+      if(partnerListenerUnsub){ partnerListenerUnsub(); partnerListenerUnsub = null; }
+      partnerListenerUnsub = window.fbListenForPartnerSwipes(pairId, currentRoundId, partnerId, (data)=>{
+        if(partnerListenerUnsub){ partnerListenerUnsub(); partnerListenerUnsub = null; }
+        finalizeDuoMatch(likedIds, data.likedIds);
+      });
+    }
+  }catch(e){
+    document.getElementById('waitingStatus').textContent = 'Verbindung verloren – bitte Internet prüfen und die Runde neu starten.';
+  }
+}
+
+function finalizeDuoMatch(myLikedIds, partnerLikedIds){
+  const matches = deckItems.filter(d => myLikedIds.includes(d.id) && partnerLikedIds.includes(d.id));
+  currentRoundId = null;
+  handleDishMatches(matches);
 }
 
 /* ---------------- Code-Austausch ---------------- */
@@ -4522,6 +4772,8 @@ function confirmReset(){
     localStorage.removeItem('tm_feedback');
     localStorage.removeItem('tm_favorites');
     localStorage.removeItem('tm_recent');
+    localStorage.removeItem('tm_pair_id');
+    localStorage.removeItem('tm_member_id');
     showScreen('screen-start');
   }
 }
