@@ -198,6 +198,14 @@
     font-family:'Fraunces', serif; font-weight:700; font-size:32px; text-align:center;
     background:var(--card-bg); border:1.5px dashed var(--tomato); border-radius:16px; padding:22px 10px; color:var(--tomato-dark);
   }
+  .week-notice{
+    background:var(--card-bg); border:1px solid var(--line); border-radius:12px;
+    padding:10px 14px; font-size:13px; color:var(--ink-soft); margin-bottom:10px;
+  }
+  .copy-prev-btn{
+    border:1px solid var(--line); background:var(--paper); color:var(--tomato-dark);
+    border-radius:100px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;
+  }
 
   .progress-row{ display:flex; align-items:center; gap:10px; margin-bottom:18px; font-size:13px; color:var(--ink-soft); }
   .progress-track{ flex:1; height:4px; border-radius:4px; background:var(--line); overflow:hidden; }
@@ -508,6 +516,7 @@
       <p>Tippt auf einen Tag, um ein Gericht dafür zu swipen.</p>
     </div>
     <div class="week-sum" id="weekSum"></div>
+    <div id="weekBanner"></div>
     <div class="week-list" id="weekList"></div>
   </section>
 
@@ -657,6 +666,16 @@
   window.fbListenForPartnerSwipes = function(pairId, roundId, partnerMemberId, callback){
     return onSnapshot(doc(db, 'pairs', pairId, 'rounds', roundId, 'swipes', partnerMemberId), (snap)=>{
       if(snap.exists()) callback(snap.data());
+    });
+  };
+
+  window.fbSetWeekPlan = async function(pairId, weekplan){
+    await setDoc(doc(db, 'pairs', pairId, 'weekplan', 'current'), { data: weekplan, updatedAt: serverTimestamp() });
+  };
+
+  window.fbListenWeekPlan = function(pairId, callback){
+    return onSnapshot(doc(db, 'pairs', pairId, 'weekplan', 'current'), (snap)=>{
+      if(snap.exists()) callback(snap.data().data || {});
     });
   };
 
@@ -4349,6 +4368,7 @@ async function joinPairFlow(){
 
 function finishPairSetup(){
   localStorage.setItem('tm_setup_done', '1');
+  startWeekPlanSync();
   startDishSwipe(null);
 }
 
@@ -4760,6 +4780,7 @@ function renderHome(){
 
 function confirmReset(){
   if(confirm('Vorlieben, Allergien, Wochenplan und Einkaufsliste zurücksetzen und Setup neu starten?')){
+    stopWeekPlanSync();
     localStorage.removeItem('tm_profile');
     localStorage.removeItem('tm_allergies');
     localStorage.removeItem('tm_setup_done');
@@ -4782,6 +4803,7 @@ function confirmReset(){
 function goWeek(){ renderWeek(); showScreen('screen-week'); }
 
 function renderWeek(){
+  startWeekPlanSync();
   const wp = getWeekPlan();
   const list = document.getElementById('weekList');
   list.innerHTML = '';
@@ -4792,7 +4814,21 @@ function renderWeek(){
       ? `Wochensumme (${plannedDishes.length} geplante ${plannedDishes.length===1?'Tag':'Tage'}): ${plannedDishes.reduce((s,d)=>s+d.kcal,0)} kcal · ${plannedDishes.reduce((s,d)=>s+d.protein,0)} g Eiweiß`
       : '';
   }
-  DAYS.forEach(day=>{
+
+  const missingDays = DAYS.filter(d => !wp[d.id]);
+  const bannerEl = document.getElementById('weekBanner');
+  if(bannerEl){
+    let html = '';
+    if(new Date().getDay() === 0){
+      html += `<div class="week-notice">🗓️ Es ist Sonntag – guter Zeitpunkt, die neue Woche zu planen!</div>`;
+    }
+    if(missingDays.length > 0 && missingDays.length < DAYS.length){
+      html += `<div class="week-notice">📝 Noch ${missingDays.length} ${missingDays.length===1?'Tag ist':'Tage sind'} offen: ${missingDays.map(d=>d.label).join(', ')}</div>`;
+    }
+    bannerEl.innerHTML = html;
+  }
+
+  DAYS.forEach((day, idx)=>{
     const dishId = wp[day.id];
     const dish = dishId ? DISHES.find(d=>d.id===dishId) : null;
     const row = document.createElement('div');
@@ -4808,16 +4844,63 @@ function renderWeek(){
       row.querySelector('.emo').onclick = ()=> openRecipe(dish.id);
       row.querySelector('.clear-x').onclick = (e)=>{ e.stopPropagation(); clearDay(day.id); };
     } else {
+      const prevDay = DAYS[(idx - 1 + DAYS.length) % DAYS.length];
+      const prevDishId = wp[prevDay.id];
+      const prevDish = prevDishId ? DISHES.find(d=>d.id===prevDishId) : null;
       row.className = 'match-row empty-day';
-      row.innerHTML = `<div class="day-label">${day.label.slice(0,2)}</div><div class="txt"><h4>${day.label}</h4><span>+ Gericht wählen</span></div>`;
+      row.innerHTML = `
+        <div class="day-label">${day.label.slice(0,2)}</div>
+        <div class="txt"><h4>${day.label}</h4><span>+ Gericht wählen</span></div>
+        ${prevDish ? `<button class="copy-prev-btn" title="Wie ${prevDay.label}: ${prevDish.name}">↩︎ wie ${prevDay.label.slice(0,2)}</button>` : ''}
+      `;
       row.onclick = ()=> startDishSwipe(day.id);
+      if(prevDish){
+        row.querySelector('.copy-prev-btn').onclick = (e)=>{ e.stopPropagation(); copyPreviousDay(day.id); };
+      }
     }
     list.appendChild(row);
   });
 }
 
-function assignDay(dayId, dishId){ const wp = getWeekPlan(); wp[dayId] = dishId; setWeekPlan(wp); addRecent(dishId); }
-function clearDay(dayId){ const wp = getWeekPlan(); delete wp[dayId]; setWeekPlan(wp); renderWeek(); }
+function assignDay(dayId, dishId){ const wp = getWeekPlan(); wp[dayId] = dishId; setWeekPlan(wp); addRecent(dishId); syncWeekPlanToCloud(wp); }
+function clearDay(dayId){ const wp = getWeekPlan(); delete wp[dayId]; setWeekPlan(wp); renderWeek(); syncWeekPlanToCloud(wp); }
+
+/* ---------------- Wochenplan-Sync (Live, Firestore) ---------------- */
+let weekPlanSyncActive = false;
+let weekPlanUnsub = null;
+
+function syncWeekPlanToCloud(wp){
+  const pairId = localStorage.getItem('tm_pair_id');
+  if(getMode() === 'duo' && pairId && window.fbSetWeekPlan){
+    window.fbSetWeekPlan(pairId, wp).catch(()=>{});
+  }
+}
+
+function startWeekPlanSync(){
+  if(weekPlanSyncActive) return;
+  const pairId = localStorage.getItem('tm_pair_id');
+  if(getMode() !== 'duo' || !pairId || !window.fbListenWeekPlan) return;
+  weekPlanSyncActive = true;
+  weekPlanUnsub = window.fbListenWeekPlan(pairId, (data)=>{
+    setWeekPlan(data || {});
+    if(document.getElementById('screen-week').classList.contains('active')) renderWeek();
+  });
+}
+
+function stopWeekPlanSync(){
+  if(weekPlanUnsub){ weekPlanUnsub(); weekPlanUnsub = null; }
+  weekPlanSyncActive = false;
+}
+
+function copyPreviousDay(dayId){
+  const idx = DAYS.findIndex(d=>d.id===dayId);
+  const prevDay = DAYS[(idx - 1 + DAYS.length) % DAYS.length];
+  const wp = getWeekPlan();
+  const prevDishId = wp[prevDay.id];
+  if(!prevDishId) return;
+  assignDay(dayId, prevDishId);
+  renderWeek();
+}
 
 /* ---------------- Tag-Auswahl (Rezept zum Wochenplan hinzufügen) ---------------- */
 function openDayPicker(dishId){
@@ -5533,7 +5616,7 @@ function closeModal(){ document.getElementById('modalOverlay').classList.remove(
 /* ---------------- Init ---------------- */
 (function init(){
   const setupDone = localStorage.getItem('tm_setup_done') === '1';
-  if(setupDone){ startDishSwipe(null); } else { showScreen('screen-start'); }
+  if(setupDone){ startWeekPlanSync(); startDishSwipe(null); } else { showScreen('screen-start'); }
 })();
 </script>
 </body>
