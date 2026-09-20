@@ -206,6 +206,30 @@
     border:1px solid var(--line); background:var(--paper); color:var(--tomato-dark);
     border-radius:100px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;
   }
+  .onboarding-emoji{ font-size:64px; text-align:center; margin-bottom:18px; }
+  .onboarding-dots{ display:flex; justify-content:center; gap:6px; margin:24px 0 30px; }
+  .onboarding-dots .dot{ width:7px; height:7px; border-radius:50%; background:var(--line); transition:all 0.2s; }
+  .onboarding-dots .dot.active{ background:var(--tomato); width:20px; border-radius:4px; }
+
+  .week-day-block{ margin-bottom:10px; }
+  .week-day-block .match-row{ margin-bottom:0; border-radius:16px 16px 0 0; }
+  .week-nutri-row{
+    display:flex; align-items:center; gap:8px; background:var(--card-bg); border:1px solid var(--line); border-top:none;
+    border-radius:0 0 16px 16px; padding:8px 16px 10px; font-size:12px; color:var(--ink-soft);
+  }
+  .step-btn{
+    width:24px; height:24px; border-radius:50%; border:1px solid var(--line); background:var(--paper);
+    font-size:14px; line-height:1; cursor:pointer; color:var(--tomato-dark); padding:0; flex-shrink:0;
+  }
+  .servings-badge{ font-weight:600; color:var(--ink); min-width:78px; text-align:center; }
+  .nutri-badge{ margin-left:auto; text-align:right; white-space:nowrap; }
+
+  .sub-btn{
+    border:none; background:none; font-size:13px; cursor:pointer; padding:2px 4px; margin-left:8px; flex-shrink:0;
+  }
+  .sub-hint{
+    font-size:12px; color:var(--ink-soft); padding:0 0 8px; font-style:italic;
+  }
 
   .progress-row{ display:flex; align-items:center; gap:10px; margin-bottom:18px; font-size:13px; color:var(--ink-soft); }
   .progress-track{ flex:1; height:4px; border-radius:4px; background:var(--line); overflow:hidden; }
@@ -327,8 +351,10 @@
 
   .modal h3{font-family:'Fraunces', serif; font-size:17px; margin:0 0 10px; padding-top:4px;}
   .modal ul.ing{list-style:none; padding:0; margin:0 0 22px;}
-  .modal ul.ing li{ display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--line); font-size:14.5px; }
-  .modal ul.ing li span.amt{color:var(--ink-soft); white-space:nowrap; margin-left:14px;}
+  .modal ul.ing li{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--line); font-size:14.5px; }
+  .modal ul.ing li span.amt{color:var(--ink-soft); white-space:nowrap;}
+  .modal ul.ing li .ing-right{ display:flex; align-items:center; margin-left:14px; }
+  .modal ul.ing li .sub-hint{ flex-basis:100%; margin-top:2px; }
 
   .modal ol.steps{padding-left:0; margin:0 0 20px; list-style:none; counter-reset:step;}
   .modal ol.steps li{ counter-increment:step; position:relative; padding:2px 0 18px 34px; font-size:14.5px; line-height:1.55; }
@@ -389,6 +415,13 @@
     <button id="tabSpontan" onclick="goSpontan()">🎲 Spontan</button>
     <button id="tabFavorites" onclick="goFavorites()">♥ Favoriten</button>
   </nav>
+
+  <!-- ONBOARDING (nur beim allerersten App-Start) -->
+  <section class="screen" id="screen-onboarding">
+    <div id="onboardingBody"></div>
+    <button class="btn primary" id="onboardingNextBtn" onclick="onboardingNext()">Weiter</button>
+    <button class="restart-link" onclick="skipOnboarding()">Überspringen</button>
+  </section>
 
   <!-- START -->
   <section class="screen active" id="screen-start">
@@ -4807,11 +4840,17 @@ function renderWeek(){
   const wp = getWeekPlan();
   const list = document.getElementById('weekList');
   list.innerHTML = '';
-  const plannedDishes = Object.values(wp).map(id=>DISHES.find(d=>d.id===id)).filter(Boolean);
+
+  const plannedEntries = Object.values(wp).map(entry=>{
+    const dish = DISHES.find(d=>d.id===getDayDishId(entry));
+    if(!dish) return null;
+    return { dish, servings: getDayServings(entry, dish) };
+  }).filter(Boolean);
+
   const sumEl = document.getElementById('weekSum');
   if(sumEl){
-    sumEl.textContent = plannedDishes.length
-      ? `Wochensumme (${plannedDishes.length} geplante ${plannedDishes.length===1?'Tag':'Tage'}): ${plannedDishes.reduce((s,d)=>s+d.kcal,0)} kcal · ${plannedDishes.reduce((s,d)=>s+d.protein,0)} g Eiweiß`
+    sumEl.textContent = plannedEntries.length
+      ? `Wochensumme (${plannedEntries.length} geplante ${plannedEntries.length===1?'Tag':'Tage'}): ${plannedEntries.reduce((s,e)=>s+e.dish.kcal*e.servings,0)} kcal · ${plannedEntries.reduce((s,e)=>s+e.dish.protein*e.servings,0)} g Eiweiß`
       : '';
   }
 
@@ -4829,10 +4868,16 @@ function renderWeek(){
   }
 
   DAYS.forEach((day, idx)=>{
-    const dishId = wp[day.id];
+    const entry = wp[day.id];
+    const dishId = getDayDishId(entry);
     const dish = dishId ? DISHES.find(d=>d.id===dishId) : null;
-    const row = document.createElement('div');
+
     if(dish){
+      const servings = getDayServings(entry, dish);
+      const block = document.createElement('div');
+      block.className = 'week-day-block';
+
+      const row = document.createElement('div');
       row.className = 'match-row';
       row.innerHTML = `
         <div class="day-label">${day.label.slice(0,2)}</div>
@@ -4843,10 +4888,28 @@ function renderWeek(){
       row.querySelector('.txt').onclick = ()=> openRecipe(dish.id);
       row.querySelector('.emo').onclick = ()=> openRecipe(dish.id);
       row.querySelector('.clear-x').onclick = (e)=>{ e.stopPropagation(); clearDay(day.id); };
+
+      const nutriRow = document.createElement('div');
+      nutriRow.className = 'week-nutri-row';
+      nutriRow.innerHTML = `
+        <button class="step-btn" aria-label="Weniger Portionen">−</button>
+        <span class="servings-badge">${servings} ${servings===1?'Portion':'Portionen'}</span>
+        <button class="step-btn" aria-label="Mehr Portionen">+</button>
+        <span class="nutri-badge">${dish.kcal*servings} kcal · ${dish.protein*servings} g Eiweiß</span>
+      `;
+      const [minusBtn, plusBtn] = nutriRow.querySelectorAll('.step-btn');
+      minusBtn.onclick = ()=> changeDayServings(day.id, -1);
+      plusBtn.onclick = ()=> changeDayServings(day.id, 1);
+
+      block.appendChild(row);
+      block.appendChild(nutriRow);
+      list.appendChild(block);
     } else {
       const prevDay = DAYS[(idx - 1 + DAYS.length) % DAYS.length];
-      const prevDishId = wp[prevDay.id];
+      const prevEntry = wp[prevDay.id];
+      const prevDishId = getDayDishId(prevEntry);
       const prevDish = prevDishId ? DISHES.find(d=>d.id===prevDishId) : null;
+      const row = document.createElement('div');
       row.className = 'match-row empty-day';
       row.innerHTML = `
         <div class="day-label">${day.label.slice(0,2)}</div>
@@ -4857,13 +4920,38 @@ function renderWeek(){
       if(prevDish){
         row.querySelector('.copy-prev-btn').onclick = (e)=>{ e.stopPropagation(); copyPreviousDay(day.id); };
       }
+      list.appendChild(row);
     }
-    list.appendChild(row);
   });
 }
 
-function assignDay(dayId, dishId){ const wp = getWeekPlan(); wp[dayId] = dishId; setWeekPlan(wp); addRecent(dishId); syncWeekPlanToCloud(wp); }
+/* ---------------- Wochenplan-Eintrag: {dishId, servings} (abwärtskompatibel zu reinem dishId-String) ---------------- */
+function getDayDishId(entry){ return entry && typeof entry === 'object' ? entry.dishId : entry; }
+function getDayServings(entry, dish){
+  if(entry && typeof entry === 'object' && entry.servings) return entry.servings;
+  return dish ? dish.servings : 2;
+}
+
+function assignDay(dayId, dishId, servings){
+  const wp = getWeekPlan();
+  wp[dayId] = { dishId, servings: servings || null };
+  setWeekPlan(wp);
+  addRecent(dishId);
+  syncWeekPlanToCloud(wp);
+}
 function clearDay(dayId){ const wp = getWeekPlan(); delete wp[dayId]; setWeekPlan(wp); renderWeek(); syncWeekPlanToCloud(wp); }
+
+function changeDayServings(dayId, delta){
+  const wp = getWeekPlan();
+  const entry = wp[dayId];
+  const dishId = getDayDishId(entry);
+  const dish = DISHES.find(d=>d.id===dishId);
+  if(!dish) return;
+  const current = getDayServings(entry, dish);
+  const next = Math.max(1, Math.min(8, current + delta));
+  assignDay(dayId, dishId, next);
+  renderWeek();
+}
 
 /* ---------------- Wochenplan-Sync (Live, Firestore) ---------------- */
 let weekPlanSyncActive = false;
@@ -4896,9 +4984,12 @@ function copyPreviousDay(dayId){
   const idx = DAYS.findIndex(d=>d.id===dayId);
   const prevDay = DAYS[(idx - 1 + DAYS.length) % DAYS.length];
   const wp = getWeekPlan();
-  const prevDishId = wp[prevDay.id];
+  const prevEntry = wp[prevDay.id];
+  const prevDishId = getDayDishId(prevEntry);
   if(!prevDishId) return;
-  assignDay(dayId, prevDishId);
+  const prevDish = DISHES.find(d=>d.id===prevDishId);
+  const prevServings = getDayServings(prevEntry, prevDish);
+  assignDay(dayId, prevDishId, prevServings);
   renderWeek();
 }
 
@@ -4962,9 +5053,12 @@ function buildShoppingList(){
   const wp = getWeekPlan();
   const numeric = {};
   const plainKeys = [];
-  Object.values(wp).forEach(dishId=>{
+  Object.values(wp).forEach(entry=>{
+    const dishId = getDayDishId(entry);
     const dish = DISHES.find(d=>d.id===dishId);
     if(!dish) return;
+    const servings = getDayServings(entry, dish);
+    const ratio = servings / dish.servings;
     dish.ingredients.forEach(ing=>{
       if(ing.amount == null){
         const key = `${ing.name}||${ing.unit}`;
@@ -4972,7 +5066,7 @@ function buildShoppingList(){
       } else {
         const key = `${ing.name}||${ing.unit}`;
         if(!numeric[key]) numeric[key] = { name: ing.name, unit: ing.unit, amount: 0 };
-        numeric[key].amount += ing.amount;
+        numeric[key].amount += ing.amount * ratio;
       }
     });
   });
@@ -5144,6 +5238,41 @@ function formatAmount(ing, ratio){
   return `${numStr} ${ing.unit}`;
 }
 
+/* ---------------- Zutaten-Ersatz-Vorschläge ---------------- */
+const SUBSTITUTES = [
+  { match:/sahne/i, sub:'Schmand oder Crème fraîche' },
+  { match:/schmand|crème fraîche/i, sub:'Saure Sahne oder Joghurt' },
+  { match:/butter/i, sub:'Margarine oder neutrales Öl' },
+  { match:/parmesan/i, sub:'Grana Padano oder anderer Hartkäse' },
+  { match:/mozzarella/i, sub:'Gouda oder veganer Käse' },
+  { match:/frischkäse/i, sub:'Quark mit etwas Sahne verrührt' },
+  { match:/ricotta/i, sub:'Hüttenkäse (püriert) oder Frischkäse' },
+  { match:/joghurt/i, sub:'Quark oder Skyr' },
+  { match:/kokosmilch/i, sub:'Sahne oder Hafersahne' },
+  { match:/sojasauce/i, sub:'Worcestersauce oder Salz mit einer Prise Zucker' },
+  { match:/limette/i, sub:'Zitrone' },
+  { match:/zitrone/i, sub:'Limette' },
+  { match:/weißwein/i, sub:'Gemüsebrühe mit einem Spritzer Essig' },
+  { match:/semmelbrösel|paniermehl/i, sub:'Fein gemahlene Haferflocken' },
+  { match:/mandeln/i, sub:'Cashewkerne oder Sonnenblumenkerne' },
+  { match:/tofu/i, sub:'Halloumi oder Räuchertofu' },
+  { match:/kichererbse/i, sub:'Weiße Bohnen' },
+  { match:/ahornsirup/i, sub:'Honig' },
+  { match:/honig/i, sub:'Ahornsirup (vegan)' },
+  { match:/schlagsahne/i, sub:'Hafersahne (steif schlagbar, Kühlschrank-kalt)' },
+];
+
+function findSubstitute(name){
+  for(const s of SUBSTITUTES){ if(s.match.test(name)) return s.sub; }
+  return null;
+}
+
+function toggleSubHint(btn){
+  const li = btn.closest('li');
+  const hint = li ? li.querySelector('.sub-hint') : null;
+  if(hint) hint.style.display = (hint.style.display === 'none') ? 'block' : 'none';
+}
+
 function openRecipe(id){
   currentRecipeId = id;
   const dish = DISHES.find(d=>d.id===id);
@@ -5195,7 +5324,14 @@ function renderRecipeModal(){
     <div class="nutri-note">Angaben pro Portion, unabhängig von der Portionszahl oben</div>
     <h3>Zutaten für ${currentServings} ${currentServings===1?'Portion':'Portionen'}</h3>
     <ul class="ing">
-      ${dish.ingredients.map(ing=>`<li>${ing.name}<span class="amt">${formatAmount(ing, ratio)}</span></li>`).join('')}
+      ${dish.ingredients.map(ing=>{
+        const sub = findSubstitute(ing.name);
+        return `<li>
+          <span class="ing-name">${ing.name}</span>
+          <span class="ing-right"><span class="amt">${formatAmount(ing, ratio)}</span>${sub ? `<button class="sub-btn" onclick="toggleSubHint(this)" aria-label="Ersatz anzeigen">🔄</button>` : ''}</span>
+          ${sub ? `<div class="sub-hint" style="display:none;">Ersatz: ${sub}</div>` : ''}
+        </li>`;
+      }).join('')}
     </ul>
     <h3>Zubereitung</h3>
     <button class="btn primary" style="margin-bottom:14px;" onclick="closeModal(); openCookMode('${dish.id}');">🍳 Kochmodus starten (Vollbildschirm)</button>
@@ -5613,10 +5749,53 @@ function renderCookMode(){
 
 function closeModal(){ document.getElementById('modalOverlay').classList.remove('active'); }
 
+/* ---------------- Onboarding (nur beim allerersten Start) ---------------- */
+let onboardingStep = 0;
+const ONBOARDING_SLIDES = [
+  { emoji:'🍽️', title:'Willkommen bei Tellermatch', text:'Wie Tinder, aber fürs Essen — findet gemeinsam heraus, worauf ihr beide Lust habt.' },
+  { emoji:'👉👈', title:'So funktioniert\'s', text:'Ihr swipt unabhängig durch Gerichte-Vorschläge. Mögt ihr beide dasselbe, gibt\'s sofort ein Match mit Rezept.' },
+  { emoji:'👫', title:'Zu zweit oder solo', text:'Verbindet euch einmalig als Paar für gemeinsame Matches, oder nutzt die App ganz für euch allein.' },
+  { emoji:'📅', title:'Und danach?', text:'Wochenplan, Einkaufsliste, Kochmodus mit Timer und der Spontan-Button für schnelle Entscheidungen warten auf euch.' },
+];
+
+function showOnboarding(){
+  onboardingStep = 0;
+  renderOnboarding();
+  showScreen('screen-onboarding');
+}
+
+function renderOnboarding(){
+  const slide = ONBOARDING_SLIDES[onboardingStep];
+  const body = document.getElementById('onboardingBody');
+  body.innerHTML = `
+    <div class="onboarding-emoji">${slide.emoji}</div>
+    <h1 class="hero" style="font-size:26px;">${slide.title}</h1>
+    <p class="sub">${slide.text}</p>
+    <div class="onboarding-dots">${ONBOARDING_SLIDES.map((_,i)=>`<span class="dot${i===onboardingStep?' active':''}"></span>`).join('')}</div>
+  `;
+  const nextBtn = document.getElementById('onboardingNextBtn');
+  nextBtn.textContent = onboardingStep === ONBOARDING_SLIDES.length - 1 ? 'Los geht\'s' : 'Weiter';
+}
+
+function onboardingNext(){
+  if(onboardingStep < ONBOARDING_SLIDES.length - 1){ onboardingStep++; renderOnboarding(); }
+  else { finishOnboarding(); }
+}
+
+function skipOnboarding(){ finishOnboarding(); }
+
+function finishOnboarding(){
+  localStorage.setItem('tm_onboarding_done', '1');
+  showScreen('screen-start');
+}
+
 /* ---------------- Init ---------------- */
 (function init(){
   const setupDone = localStorage.getItem('tm_setup_done') === '1';
-  if(setupDone){ startWeekPlanSync(); startDishSwipe(null); } else { showScreen('screen-start'); }
+  const onboardingDone = localStorage.getItem('tm_onboarding_done') === '1';
+  if(setupDone){ startWeekPlanSync(); startDishSwipe(null); }
+  else if(!onboardingDone){ showOnboarding(); }
+  else { showScreen('screen-start'); }
 })();
 </script>
 </body>
